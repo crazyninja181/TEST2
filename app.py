@@ -1,16 +1,16 @@
 from flask import Flask, request, jsonify, render_template_string, send_from_directory
 import os
-import requests
 
 app = Flask(__name__)
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-latest_message = ""       # latest text message for Pi
-latest_voice = None       # latest voice uploaded by Pi
+# ✅ Queue for text messages (stores ALL messages)
+message_queue = []
+latest_voice = None
 
 
-# ---------- HOME PAGE ----------
+# ---------- Home Page ----------
 page = """
 <!DOCTYPE html>
 <html>
@@ -46,34 +46,38 @@ def home():
     return render_template_string(page)
 
 
-# ---------- WEB → PI : Send Text ----------
+# ---------- WEB → SERVER: Store text in queue ----------
 @app.route("/send", methods=["POST"])
 def send_message():
-    global latest_message
-    latest_message = request.form.get("message", "")
-    print(f"📩 New Text Message Stored: {latest_message}")
-    return f"<h3>✅ Message Sent!</h3><p>{latest_message}</p><a href='/'>Back</a>"
+    msg = request.form.get("message", "")
+    if msg:
+        message_queue.append(msg)
+        print(f"📩 Stored: {msg}")
+    return f"<h3>✅ Message Stored!</h3><p>{msg}</p><a href='/'>Back</a>"
 
 
-# ---------- PI Fetches Text ----------
+# ---------- PI → GET next text message ----------
 @app.route("/get", methods=["GET"])
 def get_message():
-    return jsonify({"message": latest_message})
+    if message_queue:
+        return jsonify({"message": message_queue[0]})  # send oldest first
+    return jsonify({"message": ""})
 
 
-# ---------- PI Confirms Text Read ----------
+# ---------- PI confirms message was spoken ----------
 @app.route("/confirm_text", methods=["POST"])
 def confirm_text():
-    global latest_message
-    print("✅ Raspberry Pi has spoken the message. Deleting Text.")
-    latest_message = ""
-    return "Text deleted"
+    if message_queue:
+        msg = message_queue.pop(0)  # remove only the one spoken
+        print(f"✅ Deleted after speaking: {msg}")
+    return "Deleted"
 
 
-# ---------- PI → WEB : Upload Voice ----------
+# ---------- PI uploads voice ----------
 @app.route("/upload", methods=["POST"])
 def upload_voice():
     global latest_voice
+
     if "file" not in request.files:
         return "No file", 400
 
@@ -82,11 +86,11 @@ def upload_voice():
     f.save(filepath)
 
     latest_voice = f.filename
-    print(f"🎤 New voice message received: {f.filename}")
+    print(f"🎤 New voice message: {f.filename}")
     return "Voice uploaded"
 
 
-# ---------- WEB Plays the Voice ----------
+# ---------- Web plays voice ----------
 @app.route("/voice")
 def play_voice():
     if not latest_voice:
@@ -97,7 +101,7 @@ def play_voice():
     <audio controls onended="fetch('/confirm_voice', {{method:'POST'}});">
       <source src="/uploads/{latest_voice}" type="audio/wav">
     </audio>
-    <p>✅ After playback, the message will be deleted.</p>
+    <p>✅ After playback, message will be deleted.</p>
     <a href="/">Back</a>
     """
 
@@ -110,18 +114,18 @@ def confirm_voice():
         filepath = os.path.join(UPLOAD_FOLDER, latest_voice)
         if os.path.exists(filepath):
             os.remove(filepath)
-            print("✅ Voice message deleted after playback.")
+            print("✅ Voice deleted after playback.")
     latest_voice = None
     return "Voice deleted"
 
 
-# ---------- Serve Audio File ----------
+# ---------- Serve audio files ----------
 @app.route("/uploads/<filename>")
 def serve_file(filename):
     return send_from_directory(UPLOAD_FOLDER, filename)
 
 
-# ---------- Run Server ----------
+# ---------- Run server ----------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
